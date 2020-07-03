@@ -1,0 +1,1214 @@
+---
+title: "Arsenault_MolEcol_Manuscript"
+author: "Sam Arsenault"
+date: "06/09/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Supergene Mediated Differential Expression Analysis
+This is an R markdown document illustrating the bioinformatic methods used to generate the results for the manuscript by Arsenault et al. entitled "Simple inheritance, complex regulation: supergene-mediated fire ant queen polymorphism". If you have any questions about this document, please direct them to Sam Arsenault at samarsenault93@gmail.com or Brendan G. Hunt at brendan.hunt@gmail.com
+
+```{r pre-clean, echo=FALSE}
+rm(list=ls())
+```
+
+## Load in Relevant Libraries
+```{r library_load,error=FALSE,warning=FALSE,tidy=TRUE,message=FALSE}
+library(edgeR) 
+library(UpSetR)
+library(readr)
+library(magick)
+library(gridExtra)
+library(karyoploteR)
+library(cowplot)
+library(ggplot2)
+library(topGO)
+library(data.table)
+library(eulerr)
+library(pheatmap)
+library(CircStats)
+library(RColorBrewer)
+library(randtests)
+library(readxl)
+library(rtracklayer)
+library(rentrez)
+library(dplyr)
+
+```
+
+## Load in Relevant Custom Functions
+```{r function_load}
+make_polar_DEG <- function(TT_table,radial_lim) {
+  ## Things to Add: 
+  library(ggplot2)
+  #  library(gridExtra)
+  library(cowplot)
+  internal <- TT_table
+  internal$neglogFDR <- -log10(TT_table$FDR)
+  internal$angle <- atan2(TT_table$logFC.GenotypeBb,TT_table$logFC.Genotypebb)
+  internal$abslogBb <- abs(TT_table$logFC.GenotypeBb)
+  internal$abslogbb <- abs(TT_table$logFC.Genotypebb)
+  internal$length <- internal[,c("abslogBb","abslogbb")][cbind(seq_len(nrow(internal)), max.col(internal[,c("abslogBb","abslogbb")]))]
+  d=data.frame(angle=c(atan2(1,2),atan2(1,1),atan2(2,1),atan2(1,0),atan2(1,-1),atan2(0,-1),atan2(-1,-2),atan2(-1,-1),atan2(-2,-1),atan2(-1,0),atan2(-1,1),atan2(0,1)), 
+               category=c("bb>Bb>BB", "bb=Bb>BB", "Bb>bb>BB", "Bb>BB=bb", "Bb>BB>bb", "Bb=BB>bb","BB>Bb>bb","BB>Bb=bb","BB>bb>Bb","BB=bb>Bb","bb>BB>Bb","bb>Bb=BB"))
+  gg_scatter <- ggplot() +
+    geom_point(data=internal, aes(x=angle, y=neglogFDR),shape=1) + 
+    theme_bw() +
+    theme(axis.text.x=element_blank()) + 
+    coord_polar(theta="x",clip="off") +
+    scale_x_continuous(breaks = seq(-pi, pi, pi/3), limits = c(-pi, pi)) +
+    scale_y_continuous(breaks = seq(0,radial_lim,5),limits = c(0,radial_lim)) +
+    geom_vline(xintercept = c(atan2(1,2),atan2(1,1),atan2(2,1),atan2(1,0),atan2(1,-1),atan2(0,-1),atan2(-1,-2),atan2(-1,-1),atan2(-2,-1),atan2(-1,0),atan2(-1,1),atan2(0,1))) +
+    geom_histogram(d=internal,aes(x=angle,y=10*..ncount..),fill="green", alpha=0.3,bins=60) + 
+    geom_text(data=d, mapping=aes(x=angle, y=radial_lim, label=category), size=4, angle=0, vjust=0, hjust=0.5)  
+  return(gg_scatter)
+} ## Make the Polar coordinate Dominance Plot
+
+make_volcano <- function(et,Title) {
+  library(ggplot2)
+  resFilt <- topTags(et, n=nrow(et$table))
+  
+  volcanoData <- cbind(resFilt$table$logFC, -log10(resFilt$table$FDR))
+  colnames(volcanoData) <- c("logFC", "negLogPval")
+  volcanoData <- data.frame(volcanoData)
+  volcanoData$Sig <- volcanoData$negLogPval > log10(0.01)*(-1)
+  x_bounds = round(max(abs(volcanoData$logFC)))
+  y_bound = round(volcanoData$negLogPval)
+  # first set up the plot
+  volcPlot <- ggplot(volcanoData,aes(logFC,negLogPval))
+  # then add the points
+  volcPlot <- volcPlot + geom_point(aes(colour = Sig),alpha=0.4, size=2)
+  #  volcPlot <- volcPlot + geom_hline(yintercept = log10(0.01)*(-1),size=1) + geom_vline(xintercept = -1,size=1) + geom_vline(xintercept = 1,size=1) + geom_vline(xintercept = 0,size=1) + 
+  volcPlot <- volcPlot + geom_hline(yintercept = log10(0.01)*(-1),size=1) + geom_vline(xintercept = 0,size=1) + 
+    labs(x = "logFC", y = "-log10(P-value)",title=Title) + 
+    theme(legend.position="none", axis.title.x = element_text(face="bold", size=16), axis.text.x  = element_text(size=12), axis.title.y = element_text(face="bold", size=16), axis.text.y  = element_text(size=12)) + 
+    scale_x_continuous(limits=c((-1)*x_bounds,x_bounds),breaks=c((-1)*x_bounds,-1,0,1,x_bounds)) + 
+    # scale_y_continuous(limits=c(0,y_bound)) + 
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"),plot.title = element_text(hjust = 0.5))
+  test <- topTags(et,p.value = 0.01,n=100000)
+  length(test$table$logFC)
+  LO <- sum(test$table$logFC < (-1))
+  LI <- sum((test$table$logFC < 0)&(test$table$logFC >= (-1)))
+  RI <- sum((test$table$logFC <= 1)&(test$table$logFC > 0))
+  RO <- sum(test$table$logFC > 1)
+  print(LO)
+  print(LI)
+  print(RI)
+  print(RO)
+  return(volcPlot)
+  
+} ## Create a standardized volcano plot for a given edgeR QLFtest output.
+
+generate_GO_table <- function(data,Name) {
+  QLF_TT_all <- topTags(data,p.value = 1,n=Inf)$table
+  QLF_TT_sig <- topTags(data,p.value = 0.01,n=Inf)$table
+  
+  ## Load in custom annotation
+  sinv_GO <- readMappings("~/Desktop/Sinv_Analyses/NCBI_genome/NCBI_lg_gene.annot.map", sep = "\t", IDsep=",")
+  
+  ## Load Specific Gene List 
+  myInterestingGenes <- row.names(QLF_TT_sig)
+  
+  ## Load Full Gene Set
+  geneNames <- row.names(QLF_TT_all)
+  
+  ## Create geneList Structure 
+  geneList <- factor(as.integer(geneNames %in% myInterestingGenes))
+  names(geneList) <- geneNames
+  
+  ## Prep for file output
+  output_file = Name
+  
+  ### Run for BP
+  
+  ## Laod the data into a topGO data object (BP,MF,CC)
+  GOData <- new("topGOdata",ontology="BP",allGenes=geneList,description="GO analysis of DEGs with q<0.01", annot = annFUN.gene2GO, gene2GO = sinv_GO)
+  
+  ## Compute GO term enrichment
+  resultClassic <- runTest(GOData, algorithm="classic", statistic="fisher")
+  resultElim <- runTest(GOData, algorithm="elim", statistic="fisher")
+  resultTopgo <- runTest(GOData, algorithm="weight01", statistic="fisher")
+  
+  allGO = usedGO(object = GOData) 
+  
+  allRes <- GenTable(GOData, classicFisher = resultClassic, elimFisher = resultElim, topgoFisher = resultTopgo, orderBy = "topgoFisher", ranksOf = "topgoFisher", topNodes = length(allGO))
+  
+  aa <- sapply(unname(sapply(allRes$GO.ID, function(x) {genes<-genesInTerm(GOData, x); genes[[1]][sapply(genes[[1]],function(id) id %in% myInterestingGenes)]})),paste0,collapse=",")
+  allRes$genes <- aa
+  
+  res_print <- allRes[(allRes$topgoFisher<=0.05),c(1:5,8)]
+  output_file4 = paste(output_file,"TopGO_BP_sig.pdf", sep="_")
+  pdf(file = output_file4,width = 10)
+  plot.new()
+  grid.table(res_print,rows=NULL)
+  dev.off()
+  
+  GOData <- new("topGOdata",ontology="MF",allGenes=geneList,description="GO analysis of DEGs with q<0.01", annot = annFUN.gene2GO, gene2GO = sinv_GO)
+  
+  ## Compute GO term enrichment
+  resultClassic <- runTest(GOData, algorithm="classic", statistic="fisher")
+  resultElim <- runTest(GOData, algorithm="elim", statistic="fisher")
+  resultTopgo <- runTest(GOData, algorithm="weight01", statistic="fisher")
+  
+  allGO = usedGO(object = GOData) 
+  
+  allRes <- GenTable(GOData, classicFisher = resultClassic, elimFisher = resultElim, topgoFisher = resultTopgo, orderBy = "topgoFisher", ranksOf = "topgoFisher", topNodes = length(allGO))
+  
+  aa <- sapply(unname(sapply(allRes$GO.ID, function(x) {genes<-genesInTerm(GOData, x); genes[[1]][sapply(genes[[1]],function(id) id %in% myInterestingGenes)]})),paste0,collapse=",")
+  allRes$genes <- aa
+  
+  res_print <- allRes[(allRes$topgoFisher<=0.05),c(1:5,8)]
+  output_file4 = paste(output_file,"TopGO_MF_sig.pdf", sep="_")
+  pdf(file = output_file4,width = 10)
+  plot.new()
+  grid.table(res_print,rows=NULL)
+  dev.off()
+  
+  GOData <- new("topGOdata",ontology="CC",allGenes=geneList,description="GO analysis of DEGs with q<0.01", annot = annFUN.gene2GO, gene2GO = sinv_GO)
+  
+  ## Compute GO term enrichment
+  resultClassic <- runTest(GOData, algorithm="classic", statistic="fisher")
+  resultElim <- runTest(GOData, algorithm="elim", statistic="fisher")
+  resultTopgo <- runTest(GOData, algorithm="weight01", statistic="fisher")
+  
+  allGO = usedGO(object = GOData) 
+  
+  allRes <- GenTable(GOData, classicFisher = resultClassic, elimFisher = resultElim, topgoFisher = resultTopgo, orderBy = "topgoFisher", ranksOf = "topgoFisher", topNodes = length(allGO))
+  
+  aa <- sapply(unname(sapply(allRes$GO.ID, function(x) {genes<-genesInTerm(GOData, x); genes[[1]][sapply(genes[[1]],function(id) id %in% myInterestingGenes)]})),paste0,collapse=",")
+  allRes$genes <- aa
+  
+  res_print <- allRes[(allRes$topgoFisher<=0.05),c(1:5,8)]
+  output_file4 = paste(output_file,"TopGO_CC_sig.pdf", sep="_")
+  pdf(file = output_file4,width = 10)
+  plot.new()
+  grid.table(res_print,rows=NULL)
+  dev.off()
+  
+  return()
+} ## Compute and Print tables of GO term enrichment values
+
+convert_LOC <- function(dataframe) {
+  library(rtracklayer)
+  library(rentrez)
+  Si_gnG_Ensembl <- readGFF(file="~/Downloads/Solenopsis_invicta.Si_gnG.41.gff3")
+  Si_gnG_refseq <- readGFF(file="/Users/samarsenault/Desktop/Sinv_Analyses/NCBI_genome/GCF_000188075.1_Si_gnG/GCF_000188075.1_Si_gnG_genomic.gff")
+  refseq_translation <- data.frame(Si_gnG_refseq[(Si_gnG_refseq$type=="gene")|(Si_gnG_refseq$type=="pseudogene"),c("ID","Name")])
+  Ensembl_translation <- data.frame(Si_gnG_Ensembl[(Si_gnG_Ensembl$type=="gene")|(Si_gnG_Ensembl$type=="pseudogene"),c("ID","description")])
+  Ensembl_translation$ID <- gsub("gene:", "", Ensembl_translation$ID)
+  merged_translation <- merge(x=refseq_translation,y=Ensembl_translation,by.x="Name",by.y="ID")
+  g <- merge(x=dataframe,y=merged_translation,by.y="ID",by.x=0,all.x=TRUE)
+  for (i in 1:nrow(g)){
+    if (!is.na(g$Name[i])&is.na(g$description[i])){
+      search_term <- gsub(pattern = "LOC",replacement = "",x = g$Name[i])
+      g$description[i] <- entrez_summary(db="gene",id = search_term)[3]
+    }
+  }
+  return(g)
+} ## Add descriptions and proper gene names (LOC) to the data.frame
+
+generate_heatmap_frame <- function(gene_names){
+  library(karyoploteR)
+  temp <- Sinv_annot[(row.names(Sinv_annot) %in% gene_names),]
+  temp.sig<-temp[(grepl("lg",temp$chr)),]
+  temp.sig <- temp.sig[complete.cases(temp.sig), ]
+  DEG_GR <- makeGRangesFromDataFrame(temp.sig, seqnames.field = "chr",start.field = "start",end.field = "end",keep.extra.columns = TRUE)
+  windows <- unlist(tileGenome(stats::setNames(kp$chromosome.lengths, kp$chromosomes),tilewidth = 2e6))
+  dens <- countOverlaps(windows, DEG_GR)
+  values(windows) <- data.frame(y = dens)
+  return(windows)
+} ## Takes a list of gene names and makes a heatmap object to pass to karyoploteR
+
+generate_heatmap_frame_SNP <- function(SNP_data){
+  library(karyoploteR)
+  DEG_GR <- makeGRangesFromDataFrame(SNP_data, seqnames.field = "lg",start.field = "newstart",end.field = "newend",keep.extra.columns = TRUE)
+  windows <- unlist(tileGenome(stats::setNames(kp$chromosome.lengths, kp$chromosomes),tilewidth = 500000))
+  dens <- countOverlaps(windows, DEG_GR)
+  values(windows) <- data.frame(y = dens)
+  return(windows)
+} ## Takes a list of SNPs and makes a heatmap object to pass to karyoploteR
+
+check_supergene_presence_bias <- function(all_genes_TT_table){
+  all_genes_TT_table_merge <- merge(all_genes_TT_table,Sinv_annot_lg,by.x=0,by.y="X4",all.x=TRUE)
+  supergene_genes_int <- all_genes_TT_table_merge[((all_genes_TT_table_merge$X1=="lg16")&(all_genes_TT_table_merge$X2>=7311525)&(all_genes_TT_table_merge$X3<=18123987)),c("Row.names")]
+  supergene_genes_int <- supergene_genes_int[!is.na(supergene_genes_int)]
+  nonsuper_genes_int <- all_genes_TT_table_merge[((grepl(pattern = "lg",x = all_genes_TT_table_merge$X1))&(all_genes_TT_table_merge$Row.names %!in% supergene_genes_int)),c("Row.names")]
+  
+  in_super_sig <- all_genes_TT_table[((row.names(all_genes_TT_table) %in% supergene_genes_int)&(all_genes_TT_table$FDR<=0.01)),]
+  in_super_not <- all_genes_TT_table[((row.names(all_genes_TT_table) %in% supergene_genes_int)&(all_genes_TT_table$FDR>0.01)),]
+  out_super_sig <- all_genes_TT_table[((row.names(all_genes_TT_table) %in% nonsuper_genes_int)&(all_genes_TT_table$FDR<=0.01)),]
+  out_super_not <- all_genes_TT_table[((row.names(all_genes_TT_table) %in% nonsuper_genes_int)&(all_genes_TT_table$FDR>0.01)),]
+  out <- c(nrow(in_super_sig),nrow(in_super_not),nrow(out_super_sig),nrow(out_super_not),nrow(all_genes_TT_table))
+  print(out[1:4])
+  print(sum(out[1:4])-out[5])
+  chi_out <- chisq.test(matrix(out[1:4],nrow=2),correct = FALSE)
+  print(chi_out$observed)
+  print(chi_out$expected)
+  print(chi_out$p.value)
+  print(fisher.test(x=matrix(out[1:4],nrow=2),alternative = "two.sided"))
+  return()
+} ## Takes a full TopTags file (all p-values) and checks for an overrepresentation of significant DEGs in the supergene as opposed to outside of it. 
+
+check_supergene_dir_bias <- function(sig_genes_TT_table){
+  sig_genes_TT_table_merge <- merge(sig_genes_TT_table,Sinv_annot_lg,by.x=0,by.y="X4",all.x=TRUE)
+  supergene_genes_int <- sig_genes_TT_table_merge[((sig_genes_TT_table_merge$X1=="lg16")&(sig_genes_TT_table_merge$X2>=7311525)&(sig_genes_TT_table_merge$X3<=18123987)),c("Row.names")]
+  supergene_genes_int <- supergene_genes_int[!is.na(supergene_genes_int)]
+  nonsuper_genes_int <- sig_genes_TT_table_merge[((grepl(pattern = "lg",x = sig_genes_TT_table_merge$X1))&(sig_genes_TT_table_merge$Row.names %!in% supergene_genes_int)),c("Row.names")]
+  in_super_up <- sig_genes_TT_table[((row.names(sig_genes_TT_table) %in% supergene_genes_int)&(sig_genes_TT_table$logFC>0)),]
+  in_super_down <- sig_genes_TT_table[((row.names(sig_genes_TT_table) %in% supergene_genes_int)&(sig_genes_TT_table$logFC<0)),]
+  out_super_up <- sig_genes_TT_table[((row.names(sig_genes_TT_table) %in% nonsuper_genes_int)&(sig_genes_TT_table$logFC>0)),]
+  out_super_down <- sig_genes_TT_table[((row.names(sig_genes_TT_table) %in% nonsuper_genes_int)&(sig_genes_TT_table$logFC<0)),]
+  out <- c(nrow(in_super_up),nrow(in_super_down),nrow(out_super_up),nrow(out_super_down),nrow(sig_genes_TT_table))
+  print(out[1:4])
+  print(sum(out[1:4])-out[5])
+  chi_out <- chisq.test(matrix(out[1:4],nrow=2),correct = FALSE)
+  print(chi_out$observed)
+  print(chi_out$expected)
+  print(chi_out$p.value)
+  print(fisher.test(x=matrix(out[1:4],nrow=2),alternative = "two.sided"))
+  return()
+} ## Takes a table of significant DEGs and assesses whether or not there is a directional bias of differential expression within versus outside of the supergene. 
+
+perform_runs_test_sig <- function(all_TT){
+  add_pos <- merge(all_TT$table,Sinv_annot_lg,by.x=0,by.y="X4")
+  supergene_bits <- add_pos[((add_pos$X1 == "lg16")&(add_pos$X2>=7311525)&(add_pos$X3<=18123987)),]
+  supergene_order <- supergene_bits[order(supergene_bits[,'X2']),]
+  supergene_order_sig <- supergene_order[(supergene_order$FDR<=0.01),]
+  runs.test(supergene_order$FDR,plot=T,threshold = 0.01)
+  #runs.test(supergene_order_sig$logFC,plot=T,threshold = 0)
+}
+
+perform_runs_test_dir <- function(all_TT){
+  add_pos <- merge(all_TT$table,Sinv_annot_lg,by.x=0,by.y="X4")
+  supergene_bits <- add_pos[((add_pos$X1 == "lg16")&(add_pos$X2>=7311525)&(add_pos$X3<=18123987)),]
+  supergene_order <- supergene_bits[order(supergene_bits[,'X2']),]
+  supergene_order_sig <- supergene_order[(supergene_order$FDR<=0.01),]
+  #runs.test(supergene_order$FDR,plot=T,threshold = 0.01)
+  runs.test(supergene_order_sig$logFC,plot=T,threshold = 0)
+}
+
+'%!in%' <- function(x,y)!('%in%'(x,y)) ## Quality of life function
+
+```
+
+## General Information Load  
+```{r info dump}
+## Load in the gene lengths computed from the annotation for RPKM calculation
+len_file=read.delim(file="/Users/samarsenault/Desktop/Sinv_Analyses/Sinv_NCBI_counts/Genelength.tsv",sep="\t")
+head(len_file)
+
+## Load in the counts file generated using the 2-pass method from STAR
+x <- read.delim("/Users/samarsenault/Desktop/Sinv_Analyses/Sinv_NCBI_counts/NCBI_All_counts.tsv",row.names=1,sep="\t")
+head(x)
+
+## Load in the model matrix containing information formatted for both pairiwse and GLM comparisons
+adv_group <- read.delim("/Users/samarsenault/Desktop/Sinv_Analyses/Sinv_model_matrix5.tsv",row.names = 1,sep = "\t")
+head(adv_group)
+
+## Load in the annotation information from a bed file
+Sinv_annot <- read_delim("~/Desktop/Sinv_Analyses/NCBI_genome/Genetic_Mapping/NCBI_lg_gene_v3.bed", 
+                         "\t", escape_double = FALSE, col_names = FALSE, 
+                         trim_ws = TRUE)
+row.names(Sinv_annot) <- Sinv_annot$X4 ## Rename the rows of the this variable with gene names
+colnames(Sinv_annot) <- c("chr","start","end","gene") ## rename the columns with better description
+head(Sinv_annot)
+
+## Load in the linkage mapped genome annotations
+Sinv_annot_lg <- read_delim("~/Desktop/Sinv_Analyses/NCBI_genome/Genetic_Mapping/NCBI_lg_gene_v4.bed", 
+                         "\t", escape_double = FALSE, col_names = FALSE, 
+                         trim_ws = TRUE)
+```
+
+## Pairwise Comparisons
+```{r pairwise_comparisons}
+
+y_pw <- DGEList(x,group = adv_group$Alt_ID)
+
+y_pw$samples
+
+## Filter out low count genes
+keep <- rowSums(cpm(y_pw)>10/9) >= 8 
+
+len_file <- len_file[ as.vector(keep) , ]
+y_pw <- y_pw[keep, , keep.lib.sizes=FALSE]
+
+## Normalize samples by library size
+y_pw <- calcNormFactors(y_pw)
+Background.genes <- row.names(y_pw$counts)
+
+## Calculate RPKM values
+adv_group$FullID <- paste(adv_group$Individual_ID,adv_group$Alt_ID,sep = ".")
+
+## Begin Computing Differential Expression
+design_pw <- model.matrix(~0+adv_group$Alt_ID,data=y_pw$samples)
+colnames(design_pw) <- levels(y_pw$samples$group)
+
+y_pw <- estimateDisp(y_pw,design_pw)
+y_pw <- estimateGLMCommonDisp(y_pw, design_pw)
+y_pw <- estimateGLMTrendedDisp(y_pw, design_pw)
+y_pw <- estimateGLMTagwiseDisp(y_pw, design_pw)
+
+## QLM Fit and DE analysis
+fit_pw <- glmQLFit(y_pw,design_pw)
+
+my.contrasts <- makeContrasts(Brain_M_v_P_BB=Brain.Monogyne.BB-Brain.Polygyne.BB, 
+                              Brain_BB_v_Bb=Brain.Polygyne.BB-Brain.Polygyne.Bb, 
+                              Brain_Bb_v_bb=Brain.Polygyne.Bb-Brain.Polygyne.bb, 
+                              Brain_mBB_v_pBb=Brain.Monogyne.BB-Brain.Polygyne.Bb, 
+                              Brain_mBB_v_pbb=Brain.Monogyne.BB-Brain.Polygyne.bb, 
+                              Ovary_M_v_P_BB=Ovary.Monogyne.BB-Ovary.Polygyne.BB, 
+                              Ovary_BB_v_Bb=Ovary.Polygyne.BB-Ovary.Polygyne.Bb, 
+                              Ovary_Bb_v_bb=Ovary.Polygyne.Bb-Ovary.Polygyne.bb, 
+                              Ovary_mBB_v_pBb=Ovary.Monogyne.BB-Ovary.Polygyne.Bb, 
+                              Ovary_mBB_v_pbb=Ovary.Monogyne.BB-Ovary.Polygyne.bb, 
+                              Brain_v_Ovary_pBB=Brain.Polygyne.BB-Ovary.Polygyne.BB,
+                              Brain_v_Ovary_mBB=Brain.Monogyne.BB-Ovary.Monogyne.BB,
+                              Brain_v_Ovary_pBb=Brain.Polygyne.Bb-Ovary.Polygyne.Bb,
+                              Brain_v_Ovary_pbb=Brain.Polygyne.bb-Ovary.Polygyne.bb,
+                              Ovary_BB_v_bb=Ovary.Polygyne.BB-Ovary.Polygyne.bb, 
+                              Brain_BB_v_bb=Brain.Polygyne.BB-Brain.Polygyne.bb, 
+                              levels=design_pw)
+
+pw.qlf.Brain_M_v_P_BB <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Brain_M_v_P_BB"])
+pw.qlf.Brain_M_v_P_BB.TT <- topTags(pw.qlf.Brain_M_v_P_BB,p.value = 1,n=100000)
+pw.qlf.Brain_M_v_P_BB.TT.sig <- topTags(pw.qlf.Brain_M_v_P_BB,p.value = 0.01,n=100000)$table
+pw.qlf.Brain_M_v_P_BB.TT.names <- row.names(pw.qlf.Brain_M_v_P_BB.TT$table)
+
+pw.qlf.Ovary_M_v_P_BB <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Ovary_M_v_P_BB"])
+pw.qlf.Ovary_M_v_P_BB.TT <- topTags(pw.qlf.Ovary_M_v_P_BB,p.value = 1,n=100000)
+pw.qlf.Ovary_M_v_P_BB.TT.sig <- topTags(pw.qlf.Ovary_M_v_P_BB,p.value = 0.01,n=100000)$table
+pw.qlf.Ovary_M_v_P_BB.TT.names <- row.names(pw.qlf.Ovary_M_v_P_BB.TT$table)
+
+pw.qlf.Brain_BB_v_Bb <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Brain_BB_v_Bb"])
+pw.qlf.Brain_BB_v_Bb.TT <- topTags(pw.qlf.Brain_BB_v_Bb,p.value = 1,n=100000)
+pw.qlf.Brain_BB_v_Bb.TT.sig <- topTags(pw.qlf.Brain_BB_v_Bb,p.value = 0.01,n=100000)$table
+pw.qlf.Brain_BB_v_Bb.TT.names <- row.names(pw.qlf.Brain_BB_v_Bb.TT$table)
+
+pw.qlf.Ovary_BB_v_Bb <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Ovary_BB_v_Bb"])
+pw.qlf.Ovary_BB_v_Bb.TT <- topTags(pw.qlf.Ovary_BB_v_Bb,p.value = 1,n=100000)
+pw.qlf.Ovary_BB_v_Bb.TT.sig <- topTags(pw.qlf.Ovary_BB_v_Bb,p.value = 0.01,n=100000)$table
+pw.qlf.Ovary_BB_v_Bb.TT.names <- row.names(pw.qlf.Ovary_BB_v_Bb.TT$table)
+
+pw.qlf.Brain_Bb_v_bb <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Brain_Bb_v_bb"])
+pw.qlf.Brain_Bb_v_bb.TT <- topTags(pw.qlf.Brain_Bb_v_bb,p.value = 1,n=100000)
+pw.qlf.Brain_Bb_v_bb.TT.sig <- topTags(pw.qlf.Brain_Bb_v_bb,p.value = 0.01,n=100000)$table
+pw.qlf.Brain_Bb_v_bb.TT.names <- row.names(pw.qlf.Brain_Bb_v_bb.TT$table)
+
+pw.qlf.Ovary_Bb_v_bb <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Ovary_Bb_v_bb"])
+pw.qlf.Ovary_Bb_v_bb.TT <- topTags(pw.qlf.Ovary_Bb_v_bb,p.value = 1,n=100000)
+pw.qlf.Ovary_Bb_v_bb.TT.sig <- topTags(pw.qlf.Ovary_Bb_v_bb,p.value = 0.01,n=100000)$table
+pw.qlf.Ovary_Bb_v_bb.TT.names <- row.names(pw.qlf.Ovary_Bb_v_bb.TT$table)
+
+pw.qlf.Brain_v_Ovary_pBB <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Brain_v_Ovary_pBB"])
+pw.qlf.Brain_v_Ovary_pBB.TT <- topTags(pw.qlf.Brain_v_Ovary_pBB,p.value = 1,n=100000)
+pw.qlf.Brain_v_Ovary_pBB.TT.sig <- topTags(pw.qlf.Brain_v_Ovary_pBB,p.value = 0.01,n=100000)$table
+pw.qlf.Brain_v_Ovary_pBB.TT.names <- row.names(pw.qlf.Brain_v_Ovary_pBB.TT$table)
+
+pw.qlf.Brain_v_Ovary_mBB <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Brain_v_Ovary_mBB"])
+pw.qlf.Brain_v_Ovary_mBB.TT <- topTags(pw.qlf.Brain_v_Ovary_mBB,p.value = 1,n=100000)
+pw.qlf.Brain_v_Ovary_mBB.TT.sig <- topTags(pw.qlf.Brain_v_Ovary_mBB,p.value = 0.01,n=100000)$table
+pw.qlf.Brain_v_Ovary_mBB.TT.names <- row.names(pw.qlf.Brain_v_Ovary_mBB.TT$table)
+
+pw.qlf.Brain_v_Ovary_pBb <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Brain_v_Ovary_pBb"])
+pw.qlf.Brain_v_Ovary_pBb.TT <- topTags(pw.qlf.Brain_v_Ovary_pBb,p.value = 1,n=100000)
+pw.qlf.Brain_v_Ovary_pBb.TT.sig <- topTags(pw.qlf.Brain_v_Ovary_pBb,p.value = 0.01,n=100000)$table
+pw.qlf.Brain_v_Ovary_pBb.TT.names <- row.names(pw.qlf.Brain_v_Ovary_pBb.TT$table)
+
+pw.qlf.Brain_v_Ovary_pbb <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Brain_v_Ovary_pbb"])
+pw.qlf.Brain_v_Ovary_pbb.TT <- topTags(pw.qlf.Brain_v_Ovary_pbb,p.value = 1,n=100000)
+pw.qlf.Brain_v_Ovary_pbb.TT.sig <- topTags(pw.qlf.Brain_v_Ovary_pbb,p.value = 0.01,n=100000)$table
+pw.qlf.Brain_v_Ovary_pbb.TT.names <- row.names(pw.qlf.Brain_v_Ovary_pbb.TT$table)
+
+pw.qlf.Brain_BB_v_bb <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Brain_BB_v_bb"])
+pw.qlf.Brain_BB_v_bb.TT <- topTags(pw.qlf.Brain_BB_v_bb,p.value = 1,n=100000)
+pw.qlf.Brain_BB_v_bb.TT.sig <- topTags(pw.qlf.Brain_BB_v_bb,p.value = 0.01,n=100000)$table
+pw.qlf.Brain_BB_v_bb.TT.names <- row.names(pw.qlf.Brain_BB_v_bb.TT$table)
+
+pw.qlf.Ovary_BB_v_bb <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Ovary_BB_v_bb"])
+pw.qlf.Ovary_BB_v_bb.TT <- topTags(pw.qlf.Ovary_BB_v_bb,p.value = 1,n=100000)
+pw.qlf.Ovary_BB_v_bb.TT.sig <- topTags(pw.qlf.Ovary_BB_v_bb,p.value = 0.01,n=100000)$table
+pw.qlf.Ovary_BB_v_bb.TT.names <- row.names(pw.qlf.Ovary_BB_v_bb.TT$table)
+
+pw.qlf.Ovary_mBB_v_pBb <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Ovary_mBB_v_pBb"])
+pw.qlf.Ovary_mBB_v_pBb.TT <- topTags(pw.qlf.Ovary_mBB_v_pBb,p.value = 1,n=100000)
+pw.qlf.Ovary_mBB_v_pBb.TT.sig <- topTags(pw.qlf.Ovary_mBB_v_pBb,p.value = 0.01,n=100000)$table
+pw.qlf.Ovary_mBB_v_pBb.TT.names <- row.names(pw.qlf.Ovary_mBB_v_pBb.TT$table)
+
+pw.qlf.Ovary_mBB_v_pbb <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Ovary_mBB_v_pbb"])
+pw.qlf.Ovary_mBB_v_pbb.TT <- topTags(pw.qlf.Ovary_mBB_v_pbb,p.value = 1,n=100000)
+pw.qlf.Ovary_mBB_v_pbb.TT.sig <- topTags(pw.qlf.Ovary_mBB_v_pbb,p.value = 0.01,n=100000)$table
+pw.qlf.Ovary_mBB_v_pbb.TT.names <- row.names(pw.qlf.Ovary_mBB_v_pbb.TT$table)
+
+pw.qlf.Brain_mBB_v_pBb <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Brain_mBB_v_pBb"])
+pw.qlf.Brain_mBB_v_pBb.TT <- topTags(pw.qlf.Brain_mBB_v_pBb,p.value = 1,n=100000)
+pw.qlf.Brain_mBB_v_pBb.TT.sig <- topTags(pw.qlf.Brain_mBB_v_pBb,p.value = 0.01,n=100000)$table
+pw.qlf.Brain_mBB_v_pBb.TT.names <- row.names(pw.qlf.Brain_mBB_v_pBb.TT$table)
+
+pw.qlf.Brain_mBB_v_pbb <- glmQLFTest(fit_pw, contrast=my.contrasts[,"Brain_mBB_v_pbb"])
+pw.qlf.Brain_mBB_v_pbb.TT <- topTags(pw.qlf.Brain_mBB_v_pbb,p.value = 1,n=100000)
+pw.qlf.Brain_mBB_v_pbb.TT.sig <- topTags(pw.qlf.Brain_mBB_v_pbb,p.value = 0.01,n=100000)$table
+pw.qlf.Brain_mBB_v_pbb.TT.names <- row.names(pw.qlf.Brain_mBB_v_pbb.TT$table)
+
+
+## Generate Volcano Plots for the Pairiwse Comparisons
+# Pairwise, genotype-specific comparisons (Figure S1,A-D)
+make_volcano(pw.qlf.Brain_BB_v_Bb,"Brain SB/SB vs. SB/Sb")
+make_volcano(pw.qlf.Brain_BB_v_bb,"Brain SB/SB vs. Sb/Sb")
+make_volcano(pw.qlf.Ovary_BB_v_Bb,"Ovary SB/SB vs. SB/Sb")
+make_volcano(pw.qlf.Ovary_BB_v_bb,"Ovary SB/SB vs. Sb/Sb")
+
+# Pairwise, social form comparisons (Embedded within Figure 3B,C)
+make_volcano(pw.qlf.Brain_M_v_P_BB,"Brain Monogyne SB/SB vs. Polygyne SB/SB")
+make_volcano(pw.qlf.Ovary_M_v_P_BB,"Ovary Monogyne SB/SB vs. Polygyne SB/SB")
+
+# Pairwise, combinatorial-effect comparisons (Embedded within Figure 3B,C)
+make_volcano(pw.qlf.Brain_mBB_v_pBb,"Brain Monogyne SB/SB vs. Polygyne SB/Sb")
+make_volcano(pw.qlf.Ovary_mBB_v_pBb,"Ovary Monogyne SB/SB vs. Polygyne SB/Sb")
+
+## Generate UpSetR plot of Pairwise comparisons (Figure 2C)
+PW_set <- list(Brain_pBB_pBb=row.names(pw.qlf.Brain_BB_v_Bb.TT.sig),
+                 Brain_pBB_pbb=row.names(pw.qlf.Brain_BB_v_bb.TT.sig),
+                 Ovary_pBB_pBb=row.names(pw.qlf.Ovary_BB_v_Bb.TT.sig),
+                 Ovary_pBB_pbb=row.names(pw.qlf.Ovary_BB_v_bb.TT.sig)
+                 )
+upset(fromList(PW_set),nsets=4,order.by = "freq")
+
+## Generate Social Form Euler Plots (Figure 3B,C)
+Tissue_set <- list(
+  Brain_mBBvpBB=row.names(pw.qlf.Brain_M_v_P_BB.TT.sig),
+  Ovary_mBBvpBB=row.names(pw.qlf.Ovary_M_v_P_BB.TT.sig),
+  Brain_pBBvpBb=row.names(pw.qlf.Brain_BB_v_Bb.TT.sig),
+  Ovary_pBBvpBb=row.names(pw.qlf.Ovary_BB_v_Bb.TT.sig),
+  Brain_mBBvpBb=row.names(pw.qlf.Brain_mBB_v_pBb.TT.sig),
+  Ovary_mBBvpBb=row.names(pw.qlf.Ovary_mBB_v_pBb.TT.sig)
+)
+
+brain_euler <- plot(euler(Tissue_set[c(1,3,5)], shape = "ellipse"), quantities = TRUE)
+brain_euler
+ovary_euler <- plot(euler(Tissue_set[c(2,4,6)], shape = "ellipse"), quantities = TRUE)
+ovary_euler
+
+```
+
+## Generalized Linear Model Analysis
+```{r GLM,error=FALSE,warning=FALSE,tidy=TRUE,message=FALSE}
+
+## Format model matrix 
+Tissue <- factor(adv_group$Tissue)
+Social.Form <- factor(adv_group$Social.Form)
+Genotype_temp <- factor(adv_group$Genotype)
+Genotype2 <- relevel(Genotype_temp,ref="BB")
+
+## Describe the Experiment Design and define Contrasts
+glm_design <- model.matrix(~0+Social.Form+Tissue*Genotype2,data=adv_group)
+
+colnames(glm_design) <- c("Monogyne","Polygyne","TissueOvary","Genotypebb","GenotypeBb","Tissuebb","TissueBb")
+
+y_glm <- DGEList(x,samples=glm_design)
+
+## Filter out low count genes
+y_glm <- y_glm[(rowSums(cpm(y_glm)>10/9) >= 8), , keep.lib.sizes=FALSE] ## Based on the smallest number of aligned reads in our libraries as per edgeR documentation
+
+### Normalize samples by library size
+y_glm <- calcNormFactors(y_glm)
+
+Background.genes <- row.names(y_glm$counts)
+
+## Begin Computing Differential Expression
+y_glm <- estimateDisp(y_glm,glm_design)
+y_glm <- estimateGLMCommonDisp(y_glm, glm_design)
+y_glm <- estimateGLMTrendedDisp(y_glm, glm_design)
+y_glm <- estimateGLMTagwiseDisp(y_glm, glm_design)
+
+## QLM Fit and DE analysis
+fit_glm <- glmQLFit(y_glm,glm_design)
+
+## Compute Differential expression based on number of supergene alleles
+## DE Analysis for Paper
+glm.QLF.BBvBb <- glmQLFTest(fit_glm,coef="GenotypeBb") 
+glm.QLF.BBvBb_TT <- topTags(glm.QLF.BBvBb,n=Inf)
+glm.QLF.BBvBb_TT_sig <- topTags(glm.QLF.BBvBb_TT,p.value = 0.01,n=Inf)$table
+
+glm.QLF.BBvbb <- glmQLFTest(fit_glm,coef="Genotypebb") 
+glm.QLF.BBvbb_TT <- topTags(glm.QLF.BBvbb,n=Inf)
+glm.QLF.BBvbb_TT_sig <- topTags(glm.QLF.BBvbb_TT,p.value = 0.01,n=Inf)$table
+
+glm.QLF.all <- glmQLFTest(fit_glm,coef=4:5) 
+glm.QLF.all_TT <- topTags(glm.QLF.all,n=Inf)
+glm.QLF.all_TT_sig <- topTags(glm.QLF.all_TT,p.value = 0.01,n=Inf)$table
+
+
+## Compute differential expression based on social form
+con.SF <- makeContrasts(Monogyne - Polygyne, levels=glm_design)
+glm.QLF.SF <- glmQLFTest(fit_glm,contrast=con.SF)
+glm.QLF.SF_TT <- topTags(glm.QLF.SF,n=Inf)
+glm.QLF.SF_TT_sig <- topTags(glm.QLF.SF_TT,p.value = 0.01,n=Inf)$table
+
+## Visualizations ## Note here that due to the way the contrasts are set up, the directionality of the volcano plots is flipped. This was rectified in the manuscript. 
+# BB vs. Bb Volcano Plot (Figure 2A)
+make_volcano(glm.QLF.BBvBb,"GLM BB vs. Bb")
+
+# BB vs. bb Volcano Plot (Figure 2B)
+make_volcano(glm.QLF.BBvbb,"GLM BB vs. bb")
+
+# Monogyne vs Polygyne Volcano Plot (Figure 3A)
+make_volcano(glm.QLF.SF,"GLM Monogyne vs. Polygyne")
+
+```
+
+## GO Term Enrichment Analysis on pairwise and glm differential expression results
+```{r GO,error=FALSE,warning=FALSE,tidy=TRUE,message=FALSE}
+## GO Term Enrichment Analysis
+generate_GO_table(pw.qlf.Brain_BB_v_Bb,"Brain_BBvBL")
+generate_GO_table(pw.qlf.Brain_BB_v_bb,"Brain_BBvLL")
+generate_GO_table(pw.qlf.Ovary_BB_v_Bb,"Ovary_BBvBL")
+generate_GO_table(pw.qlf.Ovary_BB_v_bb,"Ovary_BBvLL")
+
+generate_GO_table(glm.QLF.BBvBb,"GLM_BBvBL")
+generate_GO_table(glm.QLF.BBvbb,"GLM_BBvLL")
+
+generate_GO_table(glm.QLF.SF,"GLM_SF")
+
+
+```
+## Generate Genome-wide DE Figure
+```{r genome_DE}
+
+## Add Tags for Candidate Genes (These genes were derived from overlapping the various differential expression analyses)
+load(file="~/Desktop/Sinv_Analyses/Candidate_gene_names.RData")
+Candidate_Genes <- c(Naming_Frame_sub$Row.names,"gene1476")
+
+temp.sig1 <- Sinv_annot_lg[((Sinv_annot_lg$X4 %in% Candidate_Genes)&(grepl("lg",Sinv_annot_lg$X1))),]
+temp.sig1 <- temp.sig1[complete.cases(temp.sig1), ]
+row.names(temp.sig1) <- temp.sig1$X4
+temp.sig1 <- convert_LOC(temp.sig1)
+## Appended gene descriptions that were not included due to an upstream error
+temp.sig1[5,"description"] <- "dopamine receptor 1 "
+temp.sig1[10,"description"] <- "pheromone-binding protein Gp-9-like"
+temp.sig1[11,"description"] <- "NADH dehydrogenase [ubiquinone] 1 alpha subcomplex subunit 9, mitochondrial-like"
+temp.sig1[14,"description"] <- "putative nuclease HARBI1"
+
+DEG_GR1 <- makeGRangesFromDataFrame(temp.sig1, seqnames.field = "X1",start.field = "X2",end.field = "X3",keep.extra.columns = TRUE)
+DEG_GR1$labels <- DEG_GR1$description
+
+Chr_sizes_GR <- toGRanges("~/Desktop/Sinv_Analyses/lg_size.bed")
+gene_bed_GR <- toGRanges("~/Desktop/Sinv_Analyses/NCBI_genome/Genetic_Mapping/NCBI_lgonly_gene_v4.bed")
+supergene_GR <- GRanges(seqnames = "lg16",ranges=IRanges(7311525,18123987)) ## Need to check points!!!
+
+pp <- getDefaultPlotParams(plot.type = 4)
+pp$data1inmargin <- 5
+pp$rightmargin <- 0.2
+kp <- plotKaryotype(genome = Chr_sizes_GR, plot.type=4, ideogram.plotter = NULL, labels.plotter = NULL,plot.params = pp)
+kpAddCytobandsAsLine(kp,lwd = 30)
+kpAddChromosomeNames(kp, srt=90)
+core_bb_windows <- generate_heatmap_frame(row.names(glm.QLF.BBvbb_TT_sig))
+core_Bb_windows <- generate_heatmap_frame(row.names(glm.QLF.BBvBb_TT_sig))
+Brain_Bb_windows <- generate_heatmap_frame(row.names(pw.qlf.Brain_BB_v_Bb.TT.sig))
+Brain_bb_windows <- generate_heatmap_frame(row.names(pw.qlf.Brain_BB_v_bb.TT.sig))
+Ovary_Bb_windows <- generate_heatmap_frame(row.names(pw.qlf.Ovary_BB_v_Bb.TT.sig))
+Ovary_bb_windows <- generate_heatmap_frame(row.names(pw.qlf.Ovary_BB_v_bb.TT.sig))
+
+## Add DEG density Heatmap
+colfunc <- colorRampPalette(c("white", "blue"))
+kpHeatmap(kp,data=core_bb_windows,r0=0.11,r1=0.15,colors = colfunc(5),ymin=0,ymax=20)
+kpHeatmap(kp,data=core_Bb_windows,r0=0.16,r1=0.2,colors = colfunc(5),ymin=0,ymax=20)
+kpHeatmap(kp,data=Brain_bb_windows,r0=0.21,r1=0.25,colors = colfunc(5),ymin=0,ymax=20)
+kpHeatmap(kp,data=Brain_Bb_windows,r0=0.26,r1=0.3,colors = colfunc(5),ymin=0,ymax=20)
+kpHeatmap(kp,data=Ovary_bb_windows,r0=0.31,r1=0.35,colors = colfunc(5),ymin=0,ymax=20)
+kpHeatmap(kp,data=Ovary_Bb_windows,r0=0.36,r1=0.4,colors = colfunc(5),ymin=0,ymax=20)
+## Add supergene Marker
+kpPlotRegions(kp,data = supergene_GR,col=adjustcolor("darkgreen",alpha.f = 0.5), r0=0.05,r1=0.1)
+kpPlotMarkers(kp, DEG_GR1,labels = DEG_GR1$description,r0 = 0.41,r1=0.5,ignore.chromosome.ends = TRUE,max.iter = 10000,label.dist = -0.001,clipping = TRUE,marker.parts = c(0.1,0.8,0.1))
+
+## Determine if there is a statistical overrepresentation of DEGs within the supergene and if it is directional. 
+## Check for overlap in supergene and DEGs for each pairwise comparison
+check_supergene_presence_bias(glm.QLF.BBvBb_TT$table)
+check_supergene_presence_bias(glm.QLF.BBvbb_TT$table)
+check_supergene_presence_bias(pw.qlf.Brain_BB_v_Bb.TT$table)
+check_supergene_presence_bias(pw.qlf.Brain_BB_v_bb.TT$table)
+check_supergene_presence_bias(pw.qlf.Ovary_BB_v_Bb.TT$table)
+check_supergene_presence_bias(pw.qlf.Ovary_BB_v_bb.TT$table)
+
+## Generate adjusted logFC versions of the results tables so pw and glm tables are comparable. 
+glm.QLF.BBvBb_adj <- glm.QLF.BBvBb_TT_sig
+glm.QLF.BBvBb_adj$logFC <- -1*glm.QLF.BBvBb_TT_sig$logFC
+glm.QLF.BBvbb_adj <- glm.QLF.BBvbb_TT_sig
+glm.QLF.BBvbb_adj$logFC <- -1*glm.QLF.BBvbb_TT_sig$logFC
+
+check_supergene_dir_bias(glm.QLF.BBvBb_adj)
+check_supergene_dir_bias(glm.QLF.BBvbb_adj) 
+check_supergene_dir_bias(pw.qlf.Brain_BB_v_Bb.TT.sig)
+check_supergene_dir_bias(pw.qlf.Brain_BB_v_bb.TT.sig)
+check_supergene_dir_bias(pw.qlf.Ovary_BB_v_Bb.TT.sig)
+check_supergene_dir_bias(pw.qlf.Ovary_BB_v_bb.TT.sig) 
+
+## Take the results from above and visualize it as a stacked bar plot (Figure S2)
+DE_dir_CT <- read.delim("~/Desktop/Sinv_Analyses/DE_dir_CT3.tsv")
+DE_dir_CT$Comparison_f = factor(DE_dir_CT$Comparison, levels=c('Full BB vs. Bb','Brain BB vs. Bb','Ovary BB vs. Bb','Full BB vs. bb','Brain BB vs. bb','Ovary BB vs. bb'))
+ggplot(data=DE_dir_CT, aes(x=Genome.Position, y=DEG_Ratio, fill=DE.Direction)) + 
+  geom_bar(stat="identity") + 
+  facet_grid(~Comparison_f) +   
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+## Allele-specific Expression Analysis
+```{r ASE}
+
+## Load SNP-level files in the individual GATK ASE Read Counter files (for all 16 Bb libraries)
+setwd("~/Desktop/Sinv_Analyses/GATK_ASERC_mod/")
+temp = list.files(pattern="*counts.csv")
+temp2 <- sapply(strsplit(temp, split='_', fixed=TRUE), function(x) (x[1]))
+myfiles = lapply(temp, read.delim)
+# Note: Each File is saved as myfiles[[x]] as a data.frame
+
+## merge first two columns into identifier column
+for (i in 1:16){
+  myfiles[[i]]$ID <- paste(myfiles[[i]]$contig,myfiles[[i]]$position,myfiles[[i]]$altAllele,sep = "~")
+  colnames(myfiles[[i]]) <- paste(colnames(myfiles[[i]]), temp2[i], sep = ".")
+  colnames(myfiles[[i]])[14] <- "ID"
+}
+
+## merge all data.frames by ID
+merged <- Reduce(function(...) merge(..., by='ID', all.x=FALSE), myfiles)
+
+## Load gene-level files (made using bedtools intersect) in the individual GATK ASE Read Counter files (for all 16 Bb libraries)
+temp_gene = list.files(pattern="*genes.tsv")
+temp2_gene <- sapply(strsplit(temp_gene, split='_', fixed=TRUE), function(x) (x[1]))
+myfiles_gene = lapply(temp_gene, read.delim)
+# Note: Each File is saved as myfiles[[x]] as a data.frame
+
+## merge first two columns into identifier column
+for (i in 1:16){
+  colnames(myfiles_gene[[i]]) <- paste(colnames(myfiles_gene[[i]]), temp2_gene[i], sep = ".")
+  colnames(myfiles_gene[[i]])[1] <- "gene"
+}
+
+## merge all data.frames by ID
+merged_genes <- Reduce(function(...) merge(..., by='gene', all.x=FALSE), myfiles_gene)
+pull_cols_genes <- grepl("refCount|altCount",colnames(merged_genes))
+row.names(merged_genes) <- merged_genes$gene
+x_genes <- merged_genes[,pull_cols_genes]
+
+## Extract the specific columns that I want (refCount and altCount)
+pull_cols <- grepl("refCount|altCount",colnames(merged))
+row.names(merged) <- merged$ID
+x <- merged[,pull_cols]
+
+## Load in model matrix (Modified to analyze ASE)
+adv_group_ASE <- read.delim("/Users/samarsenault/Desktop/Sinv_Analyses/Sinv_model_matrix6.tsv",sep = "\t")
+head(adv_group_ASE)
+
+Colony_ID <- factor(adv_group_ASE$Colony_ID)
+Tissue <- factor(adv_group_ASE$Tissue)
+Allele <- factor(adv_group_ASE$Allele)
+
+## Describe the Experiment Design and define Contrasts
+ASE_design <- model.matrix(~0+Tissue*Allele,data=adv_group_ASE)
+
+y_ASE <- DGEList(x,samples=ASE_design)
+
+y_ASE <- estimateDisp(y_ASE,ASE_design)
+y_ASE <- estimateGLMCommonDisp(y_ASE, ASE_design)
+y_ASE <- estimateGLMTrendedDisp(y_ASE, ASE_design)
+y_ASE <- estimateGLMTagwiseDisp(y_ASE, ASE_design)
+
+## QLM Fit and DE analysis
+fit_ASE <- glmQLFit(y_ASE,ASE_design)
+
+## DE Analysis
+QLF.ASE <- glmQLFTest(fit_ASE,coef="AlleleReference") 
+QLF.ASE_TT <- topTags(QLF.ASE,n=Inf)
+QLF.ASE_TT_sig <- topTags(QLF.ASE_TT,p.value = 0.01,n=Inf)$table
+QLF.ASE_TT_sig$SNPs <- row.names(QLF.ASE_TT_sig)
+
+make_volcano(QLF.ASE,"SB vs. Sb in SB/Sb individuals")
+## Note: Positive values in volcano plot indicate higher expression in reference. 
+
+
+## Describe the Experiment Design and define Contrasts
+y_gene<- DGEList(x_genes,samples=ASE_design)
+
+y_gene <- estimateDisp(y_gene,ASE_design)
+y_gene <- estimateGLMCommonDisp(y_gene, ASE_design)
+y_gene <- estimateGLMTrendedDisp(y_gene, ASE_design)
+y_gene <- estimateGLMTagwiseDisp(y_gene, ASE_design)
+
+## QLM Fit and DE analysis
+fit_gene <- glmQLFit(y_gene,ASE_design)
+
+## DE Analysis
+QLF.ASE.gene <- glmQLFTest(fit_gene,coef="AlleleReference") 
+QLF.ASE.gene_TT <- topTags(QLF.ASE.gene,n=Inf)
+QLF.ASE.gene_TT_sig <- topTags(QLF.ASE.gene_TT,p.value = 0.01,n=Inf)$table
+QLF.ASE.gene_TT_all <- topTags(QLF.ASE.gene_TT,p.value = 1,n=Inf)$table
+
+## Generate ASE Gene Volcano plot (Figure 4A)
+make_volcano(QLF.ASE.gene,"Alternatively Spliced Genes") 
+## Note: Positive values in volcano plot indicate higher expression in reference. 
+
+## Break the topTags file into a better data.frame
+QLF.ASE_TT_df <- QLF.ASE_TT$table
+QLF.ASE_TT_df$chr <- sapply(strsplit(row.names(QLF.ASE_TT_df), split='~', fixed=TRUE), function(x) (x[1]))
+QLF.ASE_TT_df$start <- sapply(strsplit(row.names(QLF.ASE_TT_df), split='~', fixed=TRUE), function(x) (x[2]))
+QLF.ASE_TT_df$end <- sapply(strsplit(row.names(QLF.ASE_TT_df), split='~', fixed=TRUE), function(x) (x[2]))
+## merge with linkage map. 
+genetic_map <- read.delim("~/Desktop/Sinv_Analyses/NCBI_genome/Genetic_Mapping/genetic_map.txt", comment.char="#")
+head (genetic_map)
+
+## Map the SNPs (based on gnG genome) to the linkage map. 
+QLF.ASE_TT_df_merge <- merge(QLF.ASE_TT_df,genetic_map,by.x="chr",by.y="scaffold")
+for (i in 1:nrow(QLF.ASE_TT_df_merge)){
+  if (QLF.ASE_TT_df_merge$orientation[i]=="-"){
+    QLF.ASE_TT_df_merge$newstart[i] <- QLF.ASE_TT_df_merge$lg_position[i] + (QLF.ASE_TT_df_merge$end.y[i]-as.numeric(QLF.ASE_TT_df_merge$start.x[i]))
+  } else {
+    QLF.ASE_TT_df_merge$newstart[i] <- QLF.ASE_TT_df_merge$lg_position[i] + as.numeric(QLF.ASE_TT_df_merge$start.x[i]) - as.numeric(QLF.ASE_TT_df_merge$start.y[i])
+  }
+}
+QLF.ASE_TT_df_merge$newend <- QLF.ASE_TT_df_merge$newstart
+QLF.ASE_TT_df_merge <- QLF.ASE_TT_df_merge[(QLF.ASE_TT_df_merge$FDR<=0.01),]
+
+## Add in LOC IDs for the ASE gene frames
+QLF.ASE.gene_TT_sig_LOC <- convert_LOC(QLF.ASE.gene_TT_sig)
+QLF.ASE.gene_TT_all_LOC <- convert_LOC(QLF.ASE.gene_TT_all)
+
+
+## Make ASE DEG Upset Plot (Figure 4B)
+##Filter Gene name lists down by which genes were analyzed in ASE and DE
+ASE_background <- QLF.ASE.gene_TT_all_LOC$Row.names
+Upset_backgroud <- intersect(Background.genes,ASE_background)
+ASE_genes_b <- QLF.ASE.gene_TT_all_LOC[(QLF.ASE.gene_TT_all_LOC$FDR <= 0.01)&(QLF.ASE.gene_TT_all_LOC$logFC<0),c("Row.names")]
+ASE_genes_B <- QLF.ASE.gene_TT_all_LOC[(QLF.ASE.gene_TT_all_LOC$FDR <= 0.01)&(QLF.ASE.gene_TT_all_LOC$logFC>0),c("Row.names")]
+DE_genes_b <- row.names(glm.QLF.BBvBb_TT_sig[(glm.QLF.BBvBb_TT_sig$logFC>0),])
+DE_genes_B <- row.names(glm.QLF.BBvBb_TT_sig[(glm.QLF.BBvBb_TT_sig$logFC<0),])
+
+ASE_genes_b <- intersect(ASE_genes_b,Upset_backgroud)
+ASE_genes_B <- intersect(ASE_genes_B,Upset_backgroud)
+DE_genes_b <- intersect(DE_genes_b,Upset_backgroud)
+DE_genes_B <- intersect(DE_genes_B,Upset_backgroud)
+
+Overlap <- list(ASE_b=ASE_genes_b,
+                ASE_B=ASE_genes_B,
+                DE_SBSb=DE_genes_b,
+                DE_SBSB=DE_genes_B
+)
+upset(fromList(Overlap),nsets=4,order.by = "freq",text.scale = 1.4)
+
+## Extract overlap information
+
+b_overlap <- ASE_genes_b[(ASE_genes_b %in% DE_genes_b)]
+b_overlap_data <- QLF.ASE.gene_TT_all_LOC[(QLF.ASE.gene_TT_all_LOC$Row.names %in% b_overlap),]
+
+B_overlap <- ASE_genes_B[ASE_genes_B %in% DE_genes_B]
+QLF.ASE.gene_TT_all_LOC[(QLF.ASE.gene_TT_all_LOC$Row.names %in% B_overlap),]
+
+nonB_overlap <- ASE_genes_B[!(ASE_genes_B %in% DE_genes_B)]
+dosage_comp_B <- QLF.ASE.gene_TT_all_LOC[(QLF.ASE.gene_TT_all_LOC$Row.names %in% nonB_overlap),]
+
+nonb_overlap <- ASE_genes_b[!(ASE_genes_b %in% DE_genes_b)]
+dosage_comp_b <- QLF.ASE.gene_TT_all_LOC[(QLF.ASE.gene_TT_all_LOC$Row.names %in% nonb_overlap),]
+
+
+```
+
+## Visualize Supergene Localization
+```{r Supergene_Localization}
+
+## Set some plotting parameters for the karyoploteR
+plot.params <- getDefaultPlotParams(plot.type = 1)
+plot.params$data1height=300
+plot.params$data1outmargin = 20
+plot.params$data1inmargin = 5
+plot.params$ideogramheight = 10
+col.over <- "#FFBD07AA" #Yellow
+col.under <- "#00A6EDAA" #Blue
+col.insig <- "#7F7F7F"
+
+## Begin Creating the tracks for Figure 5
+kp <- plotKaryotype(genome = Chr_sizes_GR, cytobands = gene_bed_GR,chromosomes = c("lg16"),plot.params = plot.params)
+kpAddBaseNumbers(kp,tick.dist = 1000000,add.units = TRUE)
+
+## Add Supergene
+kpPlotRegions(kp,data = supergene_GR,col="darkgreen", r0=0,r1=0.01)
+
+## Add in various inverions from Huang et al.  (from 0 to 0.1)
+gr <- GRanges(seqnames = "lg16", strand = c("+", "+", "+"),
+              ranges = IRanges(start = c(7948943,8793193,18097796), end = c(8793193,18097796,18098299)))
+values(gr) <- DataFrame(labels = c("Inversion A","Inversion B","Inversion C"))
+kpPlotRegions(kp,data = gr[1],col="purple", r0=0.02,r1=0.03)
+kpPlotRegions(kp,data = gr[2],col="orange", r0=0.02,r1=0.03)
+kpPlotRegions(kp,data = gr[3],col="red", r0=0.02,r1=0.03)
+
+## Plot Gene density across Lg16
+kpPlotDensity(kp, gene_bed_GR, window.size = 500000, col="#ddaacc",r0 = 0.04,r1 = 0.09)
+
+## Core BBvbb
+QLF.BBvbb_adj.merge2 <- merge(glm.QLF.BBvbb_TT_sig,Sinv_annot_lg,by.x=0,by.y="X4")
+QLF.BBvbb_adj.merge2$logFC <- -1*QLF.BBvbb_adj.merge2$logFC
+QLF.BBvbb_adj.merge <- QLF.BBvbb_adj.merge2[QLF.BBvbb_adj.merge2$X1=="lg16",]
+DEG_GR <- makeGRangesFromDataFrame(QLF.BBvbb_adj.merge, seqnames.field = "X1",start.field = "X2",end.field = "X3",keep.extra.columns = TRUE)
+
+fc.ymax=ceiling(max(abs(DEG_GR$logFC)))
+fc.ymin=-fc.ymax
+cex.val <- -log10(DEG_GR$FDR)/15 + 0.7
+sign.col <- rep(col.insig, length(DEG_GR))
+sign.col[(DEG_GR$logFC<0)&(DEG_GR$FDR<=0.01)] <- col.under
+sign.col[(DEG_GR$logFC>0)&(DEG_GR$FDR<=0.01)] <- col.over
+kpPoints(kp, data=DEG_GR, y=DEG_GR$logFC, ymax=fc.ymax, ymin=fc.ymin,cex=cex.val, col=sign.col,r0 = 0.14, r1 = 0.29)
+kpAxis(kp, ymax=fc.ymax, ymin=fc.ymin,side = 2,cex=0.5,r0 = 0.14, r1 = 0.29)
+
+DEG_density_B <- generate_heatmap_frame(QLF.BBvbb_adj.merge[QLF.BBvbb_adj.merge$logFC>0,]$Row.names)
+DEG_density_b <- generate_heatmap_frame(QLF.BBvbb_adj.merge[QLF.BBvbb_adj.merge$logFC<0,]$Row.names)
+
+colfunc <- colorRampPalette(c("lightcyan1", "red"))
+kpHeatmap(kp,data=DEG_density_B,r0=0.3,r1=0.33,colors = colfunc(5))
+kpHeatmap(kp,data=DEG_density_b,r0=0.1+0,r1=0.13,colors = colfunc(5))
+
+## Core BBvBb
+QLF.BBvBb_adj.merge2 <- merge(glm.QLF.BBvBb_TT_sig,Sinv_annot_lg,by.x=0,by.y="X4")
+QLF.BBvBb_adj.merge <- QLF.BBvBb_adj.merge2[QLF.BBvBb_adj.merge2$X1=="lg16",]
+DEG_GR <- makeGRangesFromDataFrame(QLF.BBvBb_adj.merge, seqnames.field = "X1",start.field = "X2",end.field = "X3",keep.extra.columns = TRUE)
+
+fc.ymax=ceiling(max(abs(DEG_GR$logFC)))
+fc.ymin=-fc.ymax
+cex.val <- -log10(DEG_GR$FDR)/15 + 0.7
+sign.col <- rep(col.insig, length(DEG_GR))
+sign.col[(DEG_GR$logFC<0)&(DEG_GR$FDR<=0.01)] <- col.under
+sign.col[(DEG_GR$logFC>0)&(DEG_GR$FDR<=0.01)] <- col.over
+kpPoints(kp, data=DEG_GR, y=DEG_GR$logFC, ymax=fc.ymax, ymin=fc.ymin,cex=cex.val, col=sign.col,r0 = 0.39, r1 = 0.54)
+kpAxis(kp, ymax=fc.ymax, ymin=fc.ymin,side = 2,cex=0.5,r0 = 0.38, r1 = 0.54)
+
+DEG_density_B <- generate_heatmap_frame(QLF.BBvBb_adj.merge[QLF.BBvBb_adj.merge$logFC>0,]$Row.names)
+DEG_density_b <- generate_heatmap_frame(QLF.BBvBb_adj.merge[QLF.BBvBb_adj.merge$logFC<0,]$Row.names)
+
+colfunc <- colorRampPalette(c("lightcyan1", "red"))
+kpHeatmap(kp,data=DEG_density_b,r0=0.35,r1=0.38,colors = colfunc(5))
+kpHeatmap(kp,data=DEG_density_B,r0=0.55,r1=0.58,colors = colfunc(5))
+
+## Add in ASE Heatmap and B vs. b dots 0.6-0.8
+
+ASE_GR <- makeGRangesFromDataFrame(QLF.ASE_TT_df_merge, seqnames.field = "lg",start.field = "newstart",end.field = "newend",keep.extra.columns = TRUE)
+
+fc.ymax=ceiling(max(abs(ASE_GR$logFC)))
+fc.ymin=-fc.ymax
+cex.val <- -log10(ASE_GR$FDR)/15 + 0.7
+sign.col <- rep(col.insig, length(ASE_GR))
+col.over2 <- rgb(125, 125, 0, max = 255, alpha = 100) #Yellow
+col.under2 <- rgb(0, 0, 255, max = 255, alpha = 100) #Blue
+sign.col[(ASE_GR$logFC<0)&(ASE_GR$FDR<=0.01)] <- col.under2
+sign.col[(ASE_GR$logFC>0)&(ASE_GR$FDR<=0.01)] <- col.over2
+kpPoints(kp, data=ASE_GR, y=ASE_GR$logFC, ymax=fc.ymax, ymin=fc.ymin,cex=cex.val, col=sign.col,r0 = 0.64, r1 = 0.79)
+kpAxis(kp, ymax=fc.ymax, ymin=fc.ymin,side = 2,cex=0.5,r0 = 0.63, r1 = 0.79)
+
+SNP_density_B <- generate_heatmap_frame_SNP(QLF.ASE_TT_df_merge[(QLF.ASE_TT_df_merge$logFC>0),])
+SNP_density_b <- generate_heatmap_frame_SNP(QLF.ASE_TT_df_merge[(QLF.ASE_TT_df_merge$logFC<0),])
+
+colfunc <- colorRampPalette(c("lightcyan1", "red"))
+kpHeatmap(kp,data=SNP_density_B,r0=0.80,r1=0.83,colors = colfunc(5))
+kpHeatmap(kp,data=SNP_density_b,r0=0.60,r1=0.63,colors = colfunc(5))
+
+## It is worth mentioning here that a few of the genes that are differentially expressed are not actually counted in this location analysis because they are located on the cusp of the linkage mapping information.Consequently, it was decided to exclude them from this analysis as their position cannot be confidently decided.
+## Perform Run's Test on DEGs, Testing for non-uniformity in significance
+perform_runs_test_sig(glm.QLF.BBvBb_TT)
+perform_runs_test_sig(glm.QLF.BBvbb_TT)
+
+## Perform Run's Test on DEGs, Testing for non-uniformity in directionality of significant DEGs
+perform_runs_test_dir(glm.QLF.BBvBb_TT)
+perform_runs_test_dir(glm.QLF.BBvbb_TT)
+
+## Perform Run's Test on DEGs, Testing for non-uniformity in directionality of significant DEGs in specific tissues
+perform_runs_test_dir(pw.qlf.Brain_BB_v_Bb.TT)
+perform_runs_test_dir(pw.qlf.Ovary_BB_v_Bb.TT)
+perform_runs_test_dir(pw.qlf.Brain_BB_v_bb.TT)
+perform_runs_test_dir(pw.qlf.Ovary_BB_v_bb.TT)
+
+## Perform Run's Test on ASE genes for significance and directionality
+perform_runs_test_sig(QLF.ASE.gene_TT)
+perform_runs_test_dir(QLF.ASE.gene_TT)
+
+## Runs ASE by SNP
+
+ASE_logFC <- QLF.ASE_TT_df_merge[order(QLF.ASE_TT_df_merge$newend),c("logFC")]
+runs.test(ASE_logFC,plot=T,threshold = 0)
+
+```
+
+## Generate Polar Plot
+```{r Polar}
+## Merge with linkage mapped annotation to determine supergene vs. nonsupergene genes
+glm.QLF.all_TT_sig_merge <- merge(glm.QLF.all_TT_sig,Sinv_annot_lg,by.x=0,by.y="X4",all.x=TRUE)
+
+supergene_genes <- glm.QLF.all_TT_sig_merge[((glm.QLF.all_TT_sig_merge$X1=="lg16")&(glm.QLF.all_TT_sig_merge$X2>=7311525)&(glm.QLF.all_TT_sig_merge$X3<=18123987)),c("Row.names")]
+supergene_genes <- supergene_genes[!is.na(supergene_genes)]
+nonsuper_genes <- glm.QLF.all_TT_sig_merge[((grepl(pattern = "lg",x = glm.QLF.all_TT_sig_merge$X1))&(glm.QLF.all_TT_sig_merge$Row.names %!in% supergene_genes)),c("Row.names")]
+
+## Generate Polar Plot with only the genes in the supergene (Figure S3,B,C)
+NCBI_supergene_polar <- make_polar_DEG(glm.QLF.all_TT_sig[(row.names(glm.QLF.all_TT_sig) %in% supergene_genes),],15)
+NCBI_supergene_polar
+NCBI_nonsupergene_polar <- make_polar_DEG(glm.QLF.all_TT_sig[(row.names(glm.QLF.all_TT_sig) %in% nonsuper_genes),],10)
+NCBI_nonsupergene_polar
+
+## Extract the angles of expression using an arctangent and then compare the radial distributions using a watson's two test
+nonsuper_angle <- atan2(glm.QLF.all_TT_sig[(row.names(glm.QLF.all_TT_sig) %in% nonsuper_genes),c("logFC.GenotypeBb")],glm.QLF.all_TT_sig[(row.names(glm.QLF.all_TT_sig) %in% nonsuper_genes),c("logFC.Genotypebb")])
+supergene_angle <- atan2(glm.QLF.all_TT_sig[(row.names(glm.QLF.all_TT_sig) %in% supergene_genes),c("logFC.GenotypeBb")],glm.QLF.all_TT_sig[(row.names(glm.QLF.all_TT_sig) %in% supergene_genes),c("logFC.Genotypebb")])
+watson.two(nonsuper_angle, supergene_angle, alpha=0, plot=TRUE)
+
+## Generate Dominance angle data.frame
+dominance_angle <- data.frame(gene=row.names(glm.QLF.all_TT$table),angle=atan2(glm.QLF.all_TT$table$logFC.GenotypeBb,glm.QLF.all_TT$table$logFC.Genotypebb))
+row.names(dominance_angle) <- dominance_angle$gene
+```
+
+
+## Merge the results data frames into a compendium sheet
+```{r merge_results}
+
+## Extract the results from the necessary data.frames and rename columns
+Brain_Bb <- pw.qlf.Brain_BB_v_Bb.TT$table[,c(1,2,5)]
+colnames(Brain_Bb) <- c("Brain_Bb_logFC","Brain_Bb_logCPM","Brain_Bb_FDR")
+
+Brain_bb <- pw.qlf.Brain_BB_v_bb.TT$table[,c(1,2,5)]
+colnames(Brain_bb) <- c("Brain_bb_logFC","Brain_bb_logCPM","Brain_bb_FDR")
+
+Ovary_Bb <- pw.qlf.Ovary_BB_v_Bb.TT$table[,c(1,2,5)]
+colnames(Ovary_Bb) <- c("Ovary_Bb_logFC","Ovary_Bb_logCPM","Ovary_Bb_FDR")
+
+Ovary_bb <- pw.qlf.Ovary_BB_v_bb.TT$table[,c(1,2,5)]
+colnames(Ovary_bb) <- c("Ovary_bb_logFC","Ovary_bb_logCPM","Ovary_bb_FDR")
+
+Multifactorial_Bb <- glm.QLF.BBvBb_TT$table[,c(1,2,5)]
+colnames(Multifactorial_Bb) <- c("Multifactorial_Bb_logFC","Multifactorial_Bb_logCPM","Multifactorial_Bb_FDR")
+
+Multifactorial_bb <- glm.QLF.BBvbb_TT$table[,c(1,2,5)]
+colnames(Multifactorial_bb) <- c("Multifactorial_bb_logFC","Multifactorial_bb_logCPM","Multifactorial_bb_FDR")
+
+ASE_gene <- QLF.ASE.gene_TT_all[,c(1,2,5)]
+colnames(ASE_gene) <- c("ASE_logFC","ASE_logCPM","ASE_FDR")
+
+Sinv_annot_formerge <- data.frame(Sinv_annot_lg)
+row.names(Sinv_annot_formerge) <- Sinv_annot_formerge$X4
+colnames(Sinv_annot_formerge) <- c("chr","start","end","gene")
+Sinv_annot_formerge <- Sinv_annot_formerge[,1:3]
+
+Si_gnG_refseq <- readGFF(file="/Users/samarsenault/Desktop/Sinv_Analyses/NCBI_genome/GCF_000188075.1_Si_gnG/GCF_000188075.1_Si_gnG_genomic.gff")
+refseq_LOC <- data.frame(Si_gnG_refseq[(Si_gnG_refseq$type=="gene")|(Si_gnG_refseq$type=="pseudogene"),c("ID","Name")])
+refseq_desc_old <- data.frame(Si_gnG_refseq[(Si_gnG_refseq$type=="mRNA"),c("gene","product")])
+refseq_desc = refseq_desc_old[order(refseq_desc_old[,'gene']),]
+refseq_desc = refseq_desc[!duplicated(refseq_desc$gene),]
+## Remove Redundent rows (genes with multiple transcripts in the annotation)
+refseq_merge <- merge(refseq_LOC,refseq_desc,by.x="Name",by.y="gene",all.x=TRUE)
+refseq_merge <- distinct(refseq_merge)
+row.names(refseq_merge) <- refseq_merge$ID
+refseq_merge <- refseq_merge[,c(1,3)]
+colnames(refseq_merge) <- c("LOC_ID","Description")
+
+temp1 <- merge(Sinv_annot_formerge,refseq_merge,by=0,all=T)
+temp1 <- merge(temp1,Brain_Bb,by.x="Row.names",by.y=0,all=T)
+temp1 <- merge(temp1,Brain_bb,by.x="Row.names",by.y=0,all=T)
+temp1 <- merge(temp1,Ovary_Bb,by.x="Row.names",by.y=0,all=T)
+temp1 <- merge(temp1,Ovary_bb,by.x="Row.names",by.y=0,all=T)
+temp1 <- merge(temp1,Multifactorial_Bb,by.x="Row.names",by.y=0,all=T)
+temp1 <- merge(temp1,Multifactorial_bb,by.x="Row.names",by.y=0,all=T)
+temp1 <- merge(temp1,ASE_gene,by.x="Row.names",by.y=0,all=T)
+All_Data_merge <- merge(temp1,dominance_angle,by.x="Row.names",by.y=0,all=T)
+write.table(All_Data_merge,file = "~/Desktop/Sinv_Analyses/All_Data_merge_new.tsv",quote = F,sep = "\t",row.names = F)
+
+## Extract dosage compensation candidate genes
+b_up_DosComp <- All_Data_merge[((All_Data_merge$Multifactorial_Bb_FDR>0.01)&(All_Data_merge$ASE_logFC<0)&(All_Data_merge$ASE_FDR<=0.01)&!is.na(All_Data_merge$ASE_FDR)),]
+B_up_DosComp <- All_Data_merge[((All_Data_merge$Multifactorial_Bb_FDR>0.01)&(All_Data_merge$ASE_logFC>0)&(All_Data_merge$ASE_FDR<=0.01)&!is.na(All_Data_merge$ASE_FDR)),]
+```
+
+## Odorant Binding Protein Analysis
+```{r OBP}
+## Import the OBP-aligned RNA-seq Data
+x1_OBP <- read_delim("~/Desktop/Sinv_Analyses/NCBI_genome/OBP_counts/OBP.all", 
+                  "\t", escape_double = FALSE, trim_ws = TRUE)
+x_OBP <- data.frame(x1_OBP[1:52,2:64],row.names = x1_OBP$GeneID[1:52])
+
+## Generate data.frame for pairwise OBP analyses
+y_OBP <- DGEList(x_OBP,group = adv_group$Alt_ID)
+
+keep_OBP <- rowSums(cpm(y_OBP)>10/9) >= 8 ## NEED TO EDIT!!!
+y_OBP <- y_OBP[keep_OBP, , keep.lib.sizes=FALSE]
+
+## Normalize samples by library size
+y_OBP <- calcNormFactors(y_OBP)
+obp.Background.genes <- row.names(y_OBP$counts)
+
+
+## Begin Computing Differential Expression
+y_OBP <- estimateDisp(y_OBP,design_pw)
+y_OBP <- estimateGLMCommonDisp(y_OBP, design_pw)
+y_OBP <- estimateGLMTrendedDisp(y_OBP, design_pw)
+y_OBP <- estimateGLMTagwiseDisp(y_OBP, design_pw)
+
+## QLM Fit and DE analysis
+## Note: For more conservative estimates, use glmQLFTest vs. glmLRT
+fit_OBP <- glmQLFit(y_OBP,design_pw)
+
+
+
+obp.qlf.Brain_BB_v_Bb <- glmQLFTest(fit_OBP, contrast=my.contrasts[,"Brain_BB_v_Bb"])
+obp.qlf.Brain_BB_v_Bb.TT <- topTags(obp.qlf.Brain_BB_v_Bb,p.value = 1,n=100000)
+obp.qlf.Brain_BB_v_Bb.TT.sig <- topTags(obp.qlf.Brain_BB_v_Bb,p.value = 0.01,n=100000)$table
+obp.qlf.Brain_BB_v_Bb.TT.names <- row.names(obp.qlf.Brain_BB_v_Bb.TT$table)
+
+obp.qlf.Ovary_BB_v_Bb <- glmQLFTest(fit_OBP, contrast=my.contrasts[,"Ovary_BB_v_Bb"])
+obp.qlf.Ovary_BB_v_Bb.TT <- topTags(obp.qlf.Ovary_BB_v_Bb,p.value = 1,n=100000)
+obp.qlf.Ovary_BB_v_Bb.TT.sig <- topTags(obp.qlf.Ovary_BB_v_Bb,p.value = 0.01,n=100000)$table
+obp.qlf.Ovary_BB_v_Bb.TT.names <- row.names(obp.qlf.Ovary_BB_v_Bb.TT$table)
+
+obp.qlf.Brain_BB_v_bb <- glmQLFTest(fit_OBP, contrast=my.contrasts[,"Brain_BB_v_bb"])
+obp.qlf.Brain_BB_v_bb.TT <- topTags(obp.qlf.Brain_BB_v_bb,p.value = 1,n=100000)
+obp.qlf.Brain_BB_v_bb.TT.sig <- topTags(obp.qlf.Brain_BB_v_bb,p.value = 0.01,n=100000)$table
+obp.qlf.Brain_BB_v_bb.TT.names <- row.names(obp.qlf.Brain_BB_v_bb.TT$table)
+
+obp.qlf.Ovary_BB_v_bb <- glmQLFTest(fit_OBP, contrast=my.contrasts[,"Ovary_BB_v_bb"])
+obp.qlf.Ovary_BB_v_bb.TT <- topTags(obp.qlf.Ovary_BB_v_bb,p.value = 1,n=100000)
+obp.qlf.Ovary_BB_v_bb.TT.sig <- topTags(obp.qlf.Ovary_BB_v_bb,p.value = 0.01,n=100000)$table
+obp.qlf.Ovary_BB_v_bb.TT.names <- row.names(obp.qlf.Ovary_BB_v_bb.TT$table)
+
+
+## Now the GLM version of the analysis
+y_obp_glm <- DGEList(x_OBP,samples=glm_design)
+
+## Filter out low count genes
+y_obp_glm <- y_obp_glm[keep_OBP, , keep.lib.sizes=FALSE]
+
+### Normalize samples by library size
+y_obp_glm <- calcNormFactors(y_obp_glm)
+
+## Begin Computing Differential Expression
+y_obp_glm <- estimateDisp(y_obp_glm,glm_design)
+y_obp_glm <- estimateGLMCommonDisp(y_obp_glm, glm_design)
+y_obp_glm <- estimateGLMTrendedDisp(y_obp_glm, glm_design)
+y_obp_glm <- estimateGLMTagwiseDisp(y_obp_glm, glm_design)
+
+## QLM Fit and DE analysis
+## Note: For more conservative estimates, use glmQLFTest vs. glmLRT
+fit_obp_glm <- glmQLFit(y_obp_glm,glm_design)
+
+## Compute Differential expression based on number of supergene alleles
+## DE Analysis for Paper
+obp.QLF.BBvBb <- glmQLFTest(fit_obp_glm,coef="GenotypeBb") 
+obp.QLF.BBvBb_TT <- topTags(obp.QLF.BBvBb,n=Inf)
+obp.QLF.BBvBb_TT_sig <- topTags(obp.QLF.BBvBb_TT,p.value = 0.01,n=Inf)$table
+
+obp.QLF.BBvbb <- glmQLFTest(fit_obp_glm,coef="Genotypebb") 
+obp.QLF.BBvbb_TT <- topTags(obp.QLF.BBvbb,n=Inf)
+obp.QLF.BBvbb_TT_sig <- topTags(obp.QLF.BBvbb_TT,p.value = 0.01,n=Inf)$table
+
+## Compute differential expression based on social form
+obp.QLF.SF <- glmQLFTest(fit_obp_glm,contrast=makeContrasts(Monogyne - Polygyne, levels=glm_design))
+obp.QLF.SF_TT <- topTags(obp.QLF.SF,n=Inf)
+obp.QLF.SF_TT_sig <- topTags(obp.QLF.SF_TT,p.value = 0.01,n=Inf)$table
+
+
+## Reorder the dataframes
+obp.qlf.Brain_BB_v_Bb_order <- obp.qlf.Brain_BB_v_Bb.TT$table[ order(row.names(obp.qlf.Brain_BB_v_Bb.TT$table)), ]
+obp.qlf.Ovary_BB_v_Bb_order <- obp.qlf.Ovary_BB_v_Bb.TT$table[ order(row.names(obp.qlf.Ovary_BB_v_Bb.TT$table)), ]
+obp.qlf.Brain_BB_v_bb_order <- obp.qlf.Brain_BB_v_bb.TT$table[ order(row.names(obp.qlf.Brain_BB_v_bb.TT$table)), ]
+obp.qlf.Ovary_BB_v_bb_order <- obp.qlf.Ovary_BB_v_bb.TT$table[ order(row.names(obp.qlf.Ovary_BB_v_bb.TT$table)), ]
+obp.qlf.Core_BB_v_Bb_order <- obp.QLF.BBvBb_TT$table[ order(row.names(obp.QLF.BBvBb_TT$table)), ]
+obp.qlf.Core_BB_v_bb_order <- obp.QLF.BBvbb_TT$table[ order(row.names(obp.QLF.BBvbb_TT$table)), ]
+obp.qlf.SF_order <- obp.QLF.SF_TT$table[ order(row.names(obp.QLF.SF_TT$table)), ]
+
+
+#### Generate FDR heatmap (Figure S4B)
+DEG_heatmap <- data.frame(rep(x = 0, 27))
+DEG_heatmap <- cbind(DEG_heatmap,obp.qlf.Brain_BB_v_Bb_order$FDR)
+DEG_heatmap <- cbind(DEG_heatmap,obp.qlf.Ovary_BB_v_Bb_order$FDR)
+DEG_heatmap <- cbind(DEG_heatmap,obp.qlf.Brain_BB_v_bb_order$FDR)
+DEG_heatmap <- cbind(DEG_heatmap,obp.qlf.Ovary_BB_v_bb_order$FDR)
+DEG_heatmap <- cbind(DEG_heatmap,obp.qlf.Core_BB_v_Bb_order$FDR)
+DEG_heatmap <- cbind(DEG_heatmap,obp.qlf.Core_BB_v_bb_order$FDR)
+DEG_heatmap <- cbind(DEG_heatmap,obp.qlf.SF_order$FDR)
+row.names(DEG_heatmap) <- row.names(obp.qlf.Core_BB_v_bb_order)
+DEG_heatmap <- DEG_heatmap[,2:8]
+colnames(DEG_heatmap) <- c("Brain_BB_v_Bb","Ovary_BB_v_Bb","Brain_BB_v_bb","Ovary_BB_v_bb","Core_BB_v_Bb","Core_BB_v_bb","Core_SocialForm")
+
+# create color palette
+col.pal <- brewer.pal(9,"YlOrRd")
+hm.parameters <- list(DEG_heatmap, 
+                      color = col.pal,
+                      scale = "none",
+                      kmeans_k = NA,
+                      show_rownames = T, show_colnames = T,breaks=c(0,0.001,0.01,0.05,0.1,0.2,0.5,1),display_numbers=TRUE,number_format="%.3f",
+                      main = "Solenopsis invicta OBP DEG Significance",
+                      clustering_method = "complete",
+                      cluster_rows = FALSE, cluster_cols = FALSE,
+                      clustering_distance_rows = "correlation", 
+                      clustering_distance_cols = "correlation")
+do.call("pheatmap", hm.parameters)
+
+#### Generate LogFC heatmap (Figure S4A)
+DEG_heatmap <- data.frame(rep(x = 0, 27))
+DEG_heatmap <- cbind(DEG_heatmap,obp.qlf.Brain_BB_v_Bb_order$logFC)
+DEG_heatmap <- cbind(DEG_heatmap,obp.qlf.Ovary_BB_v_Bb_order$logFC)
+DEG_heatmap <- cbind(DEG_heatmap,obp.qlf.Brain_BB_v_bb_order$logFC)
+DEG_heatmap <- cbind(DEG_heatmap,obp.qlf.Ovary_BB_v_bb_order$logFC)
+DEG_heatmap <- cbind(DEG_heatmap,-1*obp.qlf.Core_BB_v_Bb_order$logFC)
+DEG_heatmap <- cbind(DEG_heatmap,-1*obp.qlf.Core_BB_v_bb_order$logFC)
+DEG_heatmap <- cbind(DEG_heatmap,obp.qlf.SF_order$logFC)
+row.names(DEG_heatmap) <- row.names(obp.qlf.Core_BB_v_bb_order)
+DEG_heatmap <- DEG_heatmap[,2:8]
+colnames(DEG_heatmap) <- c("Brain_BB_v_Bb","Ovary_BB_v_Bb","Brain_BB_v_bb","Ovary_BB_v_bb","Core_BB_v_Bb","Core_BB_v_bb","Core_SocialForm")
+
+# create color palette
+col.pal <- brewer.pal(9,"RdBu")
+hm.parameters <- list(DEG_heatmap, 
+                      color = col.pal,
+                      scale = "none",
+                      kmeans_k = NA,
+                      show_rownames = T, show_colnames = T,display_numbers=TRUE,number_format="%.3f",
+                      main = "Solenopsis invicta OBP DEG logFC",
+                      clustering_method = "complete",
+                      cluster_rows = FALSE, cluster_cols = FALSE,
+                      clustering_distance_rows = "correlation", 
+                      clustering_distance_cols = "correlation")
+do.call("pheatmap", hm.parameters)
+
+```
+
+```{R Reviews}
+## Here we perform some additional analyses to address reviewer comments
+
+## Pairwise Bb vs. bb comparisons
+## make new volcano plots
+make_volcano(pw.qlf.Ovary_Bb_v_bb,"Ovary SB/Sb vs. Sb/Sb")
+make_volcano(pw.qlf.Brain_Bb_v_bb,"Brain SB/Sb vs. Sb/Sb")
+
+# tissue-specific UpSet plots
+
+Brain_Bb_bb <- temp1[temp1$Row.names %in% row.names(pw.qlf.Brain_Bb_v_bb.TT.sig),]
+Brain_Bb_bb
+Brain_all_sg_comps <- list(Brain_BB_Bb=row.names(pw.qlf.Brain_BB_v_Bb.TT.sig),
+                           Brain_BB_bb=row.names(pw.qlf.Brain_BB_v_bb.TT.sig),
+                           Brain_Bb_bb=row.names(pw.qlf.Brain_Bb_v_bb.TT.sig))
+upset(fromList(Brain_all_sg_comps),nsets=3,order.by = "freq",text.scale = 1.4)
+
+Ovary_Bb_bb <- temp1[temp1$Row.names %in% row.names(pw.qlf.Ovary_Bb_v_bb.TT.sig),]
+Ovary_Bb_bb
+Ovary_all_sg_comps <- list(Ovary_BB_Bb=row.names(pw.qlf.Ovary_BB_v_Bb.TT.sig),
+                           Ovary_BB_bb=row.names(pw.qlf.Ovary_BB_v_bb.TT.sig),
+                           Ovary_Bb_bb=row.names(pw.qlf.Ovary_Bb_v_bb.TT.sig))
+upset(fromList(Ovary_all_sg_comps),nsets=3,order.by = "freq",text.scale = 1.4)
+
+
+## GLM Bb vs. bb comparisons
+con.Bb_bb <- makeContrasts(GenotypeBb - Genotypebb, levels=glm_design)
+glm.QLF.Bb_bb <- glmQLFTest(fit_glm,contrast=con.Bb_bb)
+glm.QLF.Bb_bb_TT <- topTags(glm.QLF.Bb_bb,n=Inf)
+glm.QLF.Bb_bb_TT_sig <- topTags(glm.QLF.Bb_bb_TT,p.value = 0.01,n=Inf)$table
+
+make_volcano(glm.QLF.Bb_bb,"GLM SB/Sb vs. Sb/Sb")
+
+```
+
+## Present Session Info
+```{r system_state}
+save.image(file = "Molecular_Ecology_Markdown_v2.RData")
+sessionInfo()
+```
